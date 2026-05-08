@@ -87,7 +87,7 @@ body {
 #progress-fill {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, #ff6b6b, #ffd93d, #6bcb77, #4d96ff);
+  background: linear-gradient(90deg, #f0e8ff, #e8f4ff, #fff8e8, #f0e8ff);
   transition: width 0.1s ease;
 }
 

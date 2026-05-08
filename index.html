@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Winged Victory — Shatter</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="loading">
+    <div class="loading-bar"><div class="loading-fill"></div></div>
+    <p>Loading...</p>
+  </div>
+
+  <div id="scroll-hint">↓ 滚动鼠标滚轮体验破碎效果</div>
+
+  <div id="progress-bar">
+    <div id="progress-fill"></div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <div id="info">
+    <h1 class="title">VICTORY</h1>
+    <p class="subtitle">萨莫色雷斯的胜利女神 · Scroll to shatter</p>
+  </div>
+
+  <!-- importmap for bare module specifiers -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

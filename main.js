@@ -77,28 +77,148 @@ const marbleMat = new THREE.MeshStandardMaterial({
   color: 0xe8ddd0,
   roughness: 0.35,
   metalness: 0.05,
-  side: THREE.DoubleSide,
+  side: THREE.FrontSide,
 });
 
+// ─── Extrude a flat triangle soup into solid slabs ───────────────────────────
+// Strategy: find boundary edges (appear only once = outline of the chunk),
+// build front + back faces for every triangle, then side walls ONLY on
+// boundary edges.  This eliminates the internal-edge artifacts / spikes that
+// appear when every triangle edge gets its own side wall.
+function extrudeChunk(chunkPos, chunkNor, thickness) {
+  const triCount = chunkPos.length / 9; // 3 verts × 3 floats
+
+  // ── Step 1: collect boundary edges ──────────────────────────────────────
+  // Key = order-independent vertex pair string; value = directed edge {v0,v1}
+  // An edge that appears twice is interior → delete it; once = boundary.
+  const edgeMap = new Map();
+  for (let t = 0; t < triCount; t++) {
+    const b = t * 9;
+    const verts = [
+      [chunkPos[b],   chunkPos[b+1], chunkPos[b+2]],
+      [chunkPos[b+3], chunkPos[b+4], chunkPos[b+5]],
+      [chunkPos[b+6], chunkPos[b+7], chunkPos[b+8]],
+    ];
+    for (let e = 0; e < 3; e++) {
+      const v0 = verts[e], v1 = verts[(e+1)%3];
+      const sa = `${v0[0].toFixed(5)},${v0[1].toFixed(5)},${v0[2].toFixed(5)}`;
+      const sb = `${v1[0].toFixed(5)},${v1[1].toFixed(5)},${v1[2].toFixed(5)}`;
+      const key = sa < sb ? `${sa}|${sb}` : `${sb}|${sa}`;
+      if (edgeMap.has(key)) { edgeMap.delete(key); } // interior → remove
+      else                  { edgeMap.set(key, {v0, v1}); } // first time seen
+    }
+  }
+  const boundaryEdges = [...edgeMap.values()];
+
+  // ── Step 2: average normal for uniform-thickness offset ──────────────────
+  let avgNx=0, avgNy=0, avgNz=0;
+  for (let t = 0; t < triCount; t++) {
+    const b = t * 9;
+    let nx, ny, nz;
+    if (chunkNor) {
+      nx=(chunkNor[b]+chunkNor[b+3]+chunkNor[b+6])/3;
+      ny=(chunkNor[b+1]+chunkNor[b+4]+chunkNor[b+7])/3;
+      nz=(chunkNor[b+2]+chunkNor[b+5]+chunkNor[b+8])/3;
+    } else {
+      const ax=chunkPos[b+3]-chunkPos[b],   ay=chunkPos[b+4]-chunkPos[b+1], az=chunkPos[b+5]-chunkPos[b+2];
+      const bx=chunkPos[b+6]-chunkPos[b],   by=chunkPos[b+7]-chunkPos[b+1], bz=chunkPos[b+8]-chunkPos[b+2];
+      nx=ay*bz-az*by; ny=az*bx-ax*bz; nz=ax*by-ay*bx;
+      const l=Math.sqrt(nx*nx+ny*ny+nz*nz)||1; nx/=l; ny/=l; nz/=l;
+    }
+    avgNx+=nx; avgNy+=ny; avgNz+=nz;
+  }
+  const al=Math.sqrt(avgNx*avgNx+avgNy*avgNy+avgNz*avgNz)||1;
+  avgNx/=al; avgNy/=al; avgNz/=al;
+
+  // ── Step 3: allocate output buffers ──────────────────────────────────────
+  // front + back: triCount × 6 verts; side walls: boundaryEdges × 6 verts
+  const maxVerts = triCount * 6 + boundaryEdges.length * 6;
+  const outPos = new Float32Array(maxVerts * 3);
+  const outNor = new Float32Array(maxVerts * 3);
+  let vi = 0;
+  const setV = (arr, i, x, y, z) => { arr[i*3]=x; arr[i*3+1]=y; arr[i*3+2]=z; };
+
+  // ── Step 4: front & back faces ───────────────────────────────────────────
+  for (let t = 0; t < triCount; t++) {
+    const b = t * 9;
+    const fx0=chunkPos[b],   fy0=chunkPos[b+1], fz0=chunkPos[b+2];
+    const fx1=chunkPos[b+3], fy1=chunkPos[b+4], fz1=chunkPos[b+5];
+    const fx2=chunkPos[b+6], fy2=chunkPos[b+7], fz2=chunkPos[b+8];
+
+    // Per-triangle normal for correct front/back shading
+    let nx, ny, nz;
+    if (chunkNor) {
+      nx=(chunkNor[b]+chunkNor[b+3]+chunkNor[b+6])/3;
+      ny=(chunkNor[b+1]+chunkNor[b+4]+chunkNor[b+7])/3;
+      nz=(chunkNor[b+2]+chunkNor[b+5]+chunkNor[b+8])/3;
+    } else {
+      const ax=fx1-fx0, ay=fy1-fy0, az=fz1-fz0;
+      const bx=fx2-fx0, by=fy2-fy0, bz=fz2-fz0;
+      nx=ay*bz-az*by; ny=az*bx-ax*bz; nz=ax*by-ay*bx;
+    }
+    const len=Math.sqrt(nx*nx+ny*ny+nz*nz)||1;
+    nx/=len; ny/=len; nz/=len;
+
+    // Back face offset along average normal (uniform slab thickness)
+    const bx0=fx0-avgNx*thickness, by0=fy0-avgNy*thickness, bz0=fz0-avgNz*thickness;
+    const bx1=fx1-avgNx*thickness, by1=fy1-avgNy*thickness, bz1=fz1-avgNz*thickness;
+    const bx2=fx2-avgNx*thickness, by2=fy2-avgNy*thickness, bz2=fz2-avgNz*thickness;
+
+    // Front face (winding: 0,1,2)
+    setV(outPos,vi,fx0,fy0,fz0); setV(outNor,vi, nx, ny, nz); vi++;
+    setV(outPos,vi,fx1,fy1,fz1); setV(outNor,vi, nx, ny, nz); vi++;
+    setV(outPos,vi,fx2,fy2,fz2); setV(outNor,vi, nx, ny, nz); vi++;
+    // Back face (winding reversed: 0,2,1)
+    setV(outPos,vi,bx0,by0,bz0); setV(outNor,vi,-nx,-ny,-nz); vi++;
+    setV(outPos,vi,bx2,by2,bz2); setV(outNor,vi,-nx,-ny,-nz); vi++;
+    setV(outPos,vi,bx1,by1,bz1); setV(outNor,vi,-nx,-ny,-nz); vi++;
+  }
+
+  // ── Step 5: side walls on boundary edges only ────────────────────────────
+  for (const {v0, v1} of boundaryEdges) {
+    const [f0x,f0y,f0z] = v0;
+    const [f1x,f1y,f1z] = v1;
+    // Back vertices offset along average normal
+    const b0x=f0x-avgNx*thickness, b0y=f0y-avgNy*thickness, b0z=f0z-avgNz*thickness;
+    const b1x=f1x-avgNx*thickness, b1y=f1y-avgNy*thickness, b1z=f1z-avgNz*thickness;
+
+    // Side normal: E × avgN (outward, perpendicular to edge and slab face)
+    const ex=f1x-f0x, ey=f1y-f0y, ez=f1z-f0z;
+    let snx=ey*avgNz-ez*avgNy, sny=ez*avgNx-ex*avgNz, snz=ex*avgNy-ey*avgNx;
+    const sl=Math.sqrt(snx*snx+sny*sny+snz*snz)||1;
+    snx/=sl; sny/=sl; snz/=sl;
+
+    // Quad as 2 triangles (winding verified outward: f0,b0,f1 + b0,b1,f1)
+    setV(outPos,vi,f0x,f0y,f0z); setV(outNor,vi,snx,sny,snz); vi++;
+    setV(outPos,vi,b0x,b0y,b0z); setV(outNor,vi,snx,sny,snz); vi++;
+    setV(outPos,vi,f1x,f1y,f1z); setV(outNor,vi,snx,sny,snz); vi++;
+    setV(outPos,vi,b0x,b0y,b0z); setV(outNor,vi,snx,sny,snz); vi++;
+    setV(outPos,vi,b1x,b1y,b1z); setV(outNor,vi,snx,sny,snz); vi++;
+    setV(outPos,vi,f1x,f1y,f1z); setV(outNor,vi,snx,sny,snz); vi++;
+  }
+
+  return { pos: outPos.subarray(0, vi*3), nor: outNor.subarray(0, vi*3) };
+}
+
 // ─── Build Fragments from Geometry ───────────────────────────────────────────
-// Takes a merged BufferGeometry, groups every `triPerChunk` triangles into
-// one Mesh, records assembled center + random explode target.
 function buildFragments(mergedGeo, triPerChunk) {
   const pos = mergedGeo.attributes.position;
   const nor = mergedGeo.attributes.normal;
   const totalTris = Math.floor(pos.count / 3);
 
-  // Compute overall bounding sphere for scaling explode distance
   mergedGeo.computeBoundingSphere();
   const bsRadius = mergedGeo.boundingSphere.radius;
   const bsCenter = mergedGeo.boundingSphere.center.clone();
+
+  // Thickness proportional to model size — looks like stone shards
+  const thickness = bsRadius * 0.04;
 
   for (let start = 0; start < totalTris; start += triPerChunk) {
     const end = Math.min(start + triPerChunk, totalTris);
     const count = (end - start) * 3;
 
     const chunkPos = new Float32Array(count * 3);
-    const chunkNor = new Float32Array(count * 3);
+    const chunkNor = nor ? new Float32Array(count * 3) : null;
 
     // centroid of this chunk
     let cx = 0, cy = 0, cz = 0;
@@ -120,10 +240,12 @@ function buildFragments(mergedGeo, triPerChunk) {
       }
     }
 
+    // Extrude flat triangles into solid shard
+    const extruded = extrudeChunk(chunkPos, chunkNor, thickness);
+
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(chunkPos, 3));
-    if (nor) geo.setAttribute('normal', new THREE.BufferAttribute(chunkNor, 3));
-    else geo.computeVertexNormals();
+    geo.setAttribute('position', new THREE.BufferAttribute(extruded.pos.slice(), 3));
+    geo.setAttribute('normal',   new THREE.BufferAttribute(extruded.nor.slice(), 3));
 
     const mesh = new THREE.Mesh(geo, marbleMat.clone());
     mesh.position.copy(centroid);
